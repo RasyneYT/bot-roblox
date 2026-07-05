@@ -1,99 +1,93 @@
-// bot.js
-// Bot Discord + API HTTP pour répondre aux questions envoyées par un jeu Roblox.
-// Le bot reste connecté 24h/24 (voir instructions d'hébergement plus bas)
-// et expose une route POST /ask qui reçoit une question et renvoie une réponse IA courte.
-
-require('dotenv').config();
 const express = require('express');
-const { Client, GatewayIntentBits } = require('discord.js');
-const OpenAI = require('openai');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 
-// ----------------------------------------------------
-// 1. Configuration
-// ----------------------------------------------------
+// Initialisation du client Discord (vérifie tes intents selon tes besoins)
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
+});
 
+// Configuration stricte de tes salons Discord (IDs de ton serveur)
+const SALONS_DATA = {
+    data: "1523156967865188412",
+    data_chat: "1523157275735494779",
+    data_player: "1523157085196521492",
+    data_save: "1523157156822519918",
+    data_anti_roblox: "1523158393551061062"
+};
+
+/**
+ * Envoie un rapport stylisé sous forme d'Embed dans le salon désigné
+ */
+async function envoyerDonneesSalon(nomSalon, titre, description, couleur = '#0099ff') {
+    const channelId = SALONS_DATA[nomSalon];
+    if (!channelId) return console.error(`[Erreur] Salon clé "${nomSalon}" introuvable.`);
+
+    try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel) return;
+
+        const embed = new EmbedBuilder()
+            .setTitle(titre)
+            .setDescription(description)
+            .setColor(couleur)
+            .setTimestamp();
+
+        await channel.send({ embeds: [embed] });
+    } catch (error) {
+        console.error(`Impossible d'envoyer dans #${nomSalon}:`, error);
+    }
+}
+
+// =========================================================================
+// SERVEUR WEB API (RÉCEPTION DES DONNÉES ROBLOX & EDITEUR DU TOTEM)
+// =========================================================================
 const app = express();
 app.use(express.json());
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+app.post('/api/roblox-logs', (req, res) => {
+    const { type, titre, contenu, couleur } = req.body;
 
-// ----------------------------------------------------
-// 2. Connexion du bot Discord (le garde "en ligne" 24h/24)
-// ----------------------------------------------------
+    if (!type || !SALONS_DATA[type]) {
+        return res.status(400).json({ error: "Type de salon invalide" });
+    }
 
-const discordClient = new Client({ intents: [GatewayIntentBits.Guilds] });
+    // 1. Envoi immédiat des logs au salon Discord correspondant
+    envoyerDonneesSalon(type, titre, contenu, couleur || '#ffffff');
 
-discordClient.once('ready', () => {
-  console.log(`✅ Bot Discord connecté en tant que ${discordClient.user.tag}`);
+    // 2. Traitement et synchronisation avec le TOTEM du Bot
+    if (type === "data_save") {
+        try {
+            // Extraction du compteur depuis la structure de la BDD envoyée par Lua
+            const matches = contenu.match(/Total Messages IA :\*\* (\d+)/);
+            const totalMessages = matches ? matches[1] : "0";
+
+            // Met à jour l'activité du Bot (Le totem affiche : Regarde Roblox | 💬 X messages)
+            client.user.setActivity(`Roblox | 💬 ${totalMessages} messages gérés`, {
+                type: 3 // Activité : Regarde (Watching)
+            });
+        } catch (err) {
+            console.error("Erreur lors du traitement du Totem :", err);
+        }
+    }
+
+    res.json({ success: true });
 });
 
-discordClient.login(process.env.DISCORD_TOKEN);
-
-// ----------------------------------------------------
-// 3. Fonction de nettoyage du texte
-//    - retire les retours à la ligne et caractères spéciaux
-//    - limite à 120 caractères
-// ----------------------------------------------------
-
-function nettoyerTexte(texte) {
-  let propre = texte.replace(/[\r\n\t]+/g, ' ');           // supprime sauts de ligne/tabulations
-  propre = propre.replace(/[^\p{L}\p{N}\s.,!?'-]/gu, '');   // garde lettres, chiffres, ponctuation simple
-  propre = propre.replace(/\s+/g, ' ').trim();              // espaces multiples -> un seul
-
-  if (propre.length > 120) {
-    propre = propre.slice(0, 117).trim() + '...';
-  }
-  return propre;
-}
-
-// ----------------------------------------------------
-// 4. Route HTTP appelée par le script Roblox
-// ----------------------------------------------------
-
-app.post('/ask', async (req, res) => {
-  const question = req.body && req.body.question;
-
-  if (!question || typeof question !== 'string') {
-    return res.status(400).json({ error: 'Le champ "question" (string) est requis.' });
-  }
-
-  try {
-    // Appel à l'API OpenAI (voir plus bas pour utiliser Gemini à la place)
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Tu réponds de façon très courte, factuelle et exacte, en une seule phrase, ' +
-            'sans mise en forme, sans emoji, sans guillemets.'
-        },
-        { role: 'user', content: question }
-      ],
-      max_tokens: 60,
-      temperature: 0.2
-    });
-
-    const reponseBrute = completion.choices[0].message.content || '';
-    const reponsePropre = nettoyerTexte(reponseBrute);
-
-    return res.json({ answer: reponsePropre });
-  } catch (erreur) {
-    console.error('Erreur lors de l\'appel IA :', erreur);
-    return res.status(500).json({ error: "Impossible d'obtenir une réponse pour le moment." });
-  }
+// Événement d'allumage du Bot Discord
+client.once('ready', () => {
+    console.log(`Bot connecté en tant que : ${client.user.tag}`);
+    envoyerDonneesSalon('data', '🟢 Bot Connecté', 'L\'infrastructure Node.js est en ligne et à l\'écoute de l\'API.', '#2ecc71');
 });
 
-// Route de santé simple, pratique pour vérifier que le serveur tourne
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', discordReady: discordClient.isReady() });
-});
+// Connexion au Token Discord de ton application (géré via tes variables d'environnement)
+client.login(process.env.DISCORD_TOKEN || "METS_TON_TOKEN_DISCORD_ICI");
 
-// ----------------------------------------------------
-// 5. Démarrage du serveur HTTP
-// ----------------------------------------------------
-
+// Lancement du serveur d'écoute sur le port de Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌐 API en écoute sur le port ${PORT}`);
+    console.log(`Serveur de communication Roblox connecté sur le port : ${PORT}`);
 });
