@@ -88,6 +88,6 @@ client.login(process.env.DISCORD_TOKEN || "METS_TON_TOKEN_DISCORD_ICI");
 
 // Lancement du serveur d'écoute sur le port de Render
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Serveur de communication Roblox connecté sur le port : ${PORT}`);
 });
